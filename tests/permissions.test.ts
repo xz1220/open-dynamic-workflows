@@ -50,7 +50,7 @@ const BEFORE_TIERS: Record<string, string[]> = {
   kimi: ["kimi", "--work-dir", "{workspace}", "--print", "--input-format", "text", "--output-format", "text"],
   omp: ["omp", "--print", "--no-session", "--approval-mode", "yolo", "--cwd", "{workspace}"],
   kilo: ["kilo", "run", "--format", "json", "--auto", "--dir", "{workspace}"],
-  opencode: ["opencode", "run", "--format", "json", "--auto", "--dir", "{workspace}"],
+  opencode: ["opencode", "run", "--format", "json", "--auto"],
   cursor: ["agent", "--print", "--force", "--trust", "--output-format", "text", "--workspace", "{workspace}"],
   agy: [...AGY_PRINT, "--mode", "accept-edits"],
 };

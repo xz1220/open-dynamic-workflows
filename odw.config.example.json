@@ -220,7 +220,8 @@
     },
     "opencode": {
       "label": "OpenCode",
-      "command": ["opencode", "run", "--format", "json", "{permission_args}", "--dir", "{workspace}"],
+      "command": ["opencode", "run", "--format", "json", "{permission_args}"],
+      "workspacePwd": true,
       "stdin": "{prompt}",
       "flags": { "model": ["--model"] },
       "output": { "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" },

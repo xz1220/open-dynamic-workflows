@@ -105,6 +105,35 @@ test("T5: an option with no native carrier surfaces as an outcome note, never dr
   );
 });
 
+test("only an adapter that asks for it gets its workspace as PWD", async () => {
+  const saved = process.env.PWD;
+  process.env.PWD = "/somewhere/else";
+  try {
+    const names = Object.keys(defaultConfig().adapters);
+    assert.ok(names.includes("opencode") && names.length > 1);
+    for (const name of names) {
+      const config = defaultConfig();
+      config.settings.defaultAdapter = name;
+      let env: Record<string, string | undefined> | undefined;
+      let cwd: string | undefined;
+      const bridge = new Bridge(config, {
+        source: "/repo",
+        runner: async (_command, options) => {
+          env = options?.env;
+          cwd = options?.cwd;
+          return ok(JSON.stringify({ type: "text", part: { type: "text", text: "answer" } }));
+        },
+      });
+      await bridge.run({ prompt: "ask" }).catch(() => undefined);
+      assert.equal(cwd, "/repo", name);
+      assert.equal(env?.PWD, name === "opencode" ? "/repo" : "/somewhere/else", name);
+    }
+  } finally {
+    if (saved === undefined) delete process.env.PWD;
+    else process.env.PWD = saved;
+  }
+});
+
 test("new harness adapters send prompts on stdin and route workspace and model flags", async () => {
   for (const name of ["omp", "kilo", "opencode", "cursor"]) {
     const config = defaultConfig();
@@ -128,7 +157,7 @@ test("new harness adapters send prompts on stdin and route workspace and model f
     assert.equal(out.text, `${name} answer`);
     assert.match(stdin, new RegExp(`ask ${name}`));
     assert.equal(command.includes("{prompt}"), false);
-    assert.ok(command.includes("/repo"), `expected workspace in ${JSON.stringify(command)}`);
+    if (name !== "opencode") assert.ok(command.includes("/repo"), `expected workspace in ${JSON.stringify(command)}`);
     const modelFlag = command.indexOf("--model");
     assert.ok(modelFlag >= 0, `expected model flag in ${JSON.stringify(command)}`);
     assert.equal(command[modelFlag + 1], `${name}/model`);

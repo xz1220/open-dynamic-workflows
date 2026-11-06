@@ -56,8 +56,8 @@ test("new built-ins declare their automation, model, workspace, and output contr
       select: "last",
     });
     assert.ok(edit(name).includes("--auto"));
-    assert.ok(adapter.command.includes("--dir"));
-    assert.ok(adapter.command.includes("{workspace}"));
+    assert.equal(adapter.command.includes("--dir"), name === "kilo");
+    assert.equal(adapter.command.includes("{workspace}"), name === "kilo");
     assert.equal(adapter.stdin, "{prompt}");
   }
 

@@ -37,6 +37,7 @@ export interface RawAdapter {
   stallTimeout?: number;
   concurrency?: number;
   promptCache?: boolean;
+  workspacePwd?: boolean;
   label?: string;
   flags?: AdapterFlags;
   output?: AdapterOutput;
@@ -626,7 +627,8 @@ export const BUILTIN_ADAPTERS: Record<string, RawAdapter> = {
   },
   opencode: {
     label: "OpenCode",
-    command: ["opencode", "run", "--format", "json", "{permission_args}", "--dir", "{workspace}"],
+    command: ["opencode", "run", "--format", "json", "{permission_args}"],
+    workspacePwd: true,
     stdin: "{prompt}",
     flags: { model: ["--model"] },
     output: KILO_OPENCODE_OUTPUT,
