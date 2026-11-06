@@ -134,6 +134,38 @@ test("only an adapter that asks for it gets its workspace as PWD", async () => {
   }
 });
 
+test("an isolated agent gets its worktree as PWD, not the checkout it came from", async () => {
+  const saved = process.env.PWD;
+  const repo = mkdtempSync(join(tmpdir(), "odw-workspace-pwd-"));
+  process.env.PWD = repo;
+  try {
+    const git = (...args: string[]) => execFileSync("git", ["-C", repo, ...args], { encoding: "utf8" });
+    git("init", "-q");
+    writeFileSync(join(repo, "a.txt"), "a\n");
+    git("add", "-A");
+    git("-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--no-gpg-sign", "-m", "init");
+    const config = defaultConfig();
+    config.settings.defaultAdapter = "opencode";
+    let env: Record<string, string | undefined> | undefined;
+    let cwd: string | undefined;
+    const bridge = new Bridge(config, {
+      source: repo,
+      runner: async (_command, options) => {
+        env = options?.env;
+        cwd = options?.cwd;
+        return ok(JSON.stringify({ type: "text", part: { type: "text", text: "answer" } }));
+      },
+    });
+    await bridge.run({ prompt: "edit", isolation: "worktree" });
+    assert.ok(cwd && cwd !== repo, `expected a worktree, got ${cwd}`);
+    assert.equal(env?.PWD, cwd);
+  } finally {
+    if (saved === undefined) delete process.env.PWD;
+    else process.env.PWD = saved;
+    rmSync(repo, { recursive: true, force: true });
+  }
+});
+
 test("new harness adapters send prompts on stdin and route workspace and model flags", async () => {
   for (const name of ["omp", "kilo", "opencode", "cursor"]) {
     const config = defaultConfig();
