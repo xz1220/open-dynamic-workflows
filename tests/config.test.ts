@@ -54,6 +54,9 @@ test("new built-ins declare their automation, model, workspace, and output contr
       eventType: "text",
       textPath: ["part", "text"],
       select: "last",
+      usageEvent: "step_finish",
+      usagePath: ["part", "tokens"],
+      costPath: ["part", "cost"],
     });
     assert.ok(edit(name).includes("--auto"));
     assert.ok(adapter.command.includes("--dir"));

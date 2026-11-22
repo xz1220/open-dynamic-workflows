@@ -44,7 +44,9 @@ type Count = (typeof USAGE_COUNTS)[number];
  * Understood field names: Anthropic's (`input_tokens`, `output_tokens`,
  * `cache_read_input_tokens`, `cache_creation_input_tokens`, and Claude Code's
  * camel-case `cacheReadInputTokens` / `cacheCreationInputTokens`; agy's
- * `cache_read_tokens`, counted apart the same way), OpenAI's
+ * `cache_read_tokens`, counted apart the same way; OpenCode's and Kilo's
+ * `{ input, output, reasoning, cache: { read, write } }`, apart too, with the
+ * reasoning counted apart from `output` and added back into it), OpenAI's
  * (`prompt_tokens`, `completion_tokens`, `*_tokens_details.cached_tokens`),
  * Codex's `cached_input_tokens` and `cache_write_input_tokens` (both part of
  * its `input_tokens`, as its reasoning_output_tokens are of its
@@ -70,12 +72,27 @@ export function normalizeUsage(raw: unknown, cost?: unknown): Usage | undefined 
     // does agy (https://antigravity.google/docs/cli/headless): a turn of 278
     // input_tokens reports 30214 cache_read_tokens, and its total_tokens is
     // input_tokens + output_tokens...
-    const cacheRead = first("cache_read_input_tokens", "cacheReadInputTokens", "cache_read_tokens");
-    const cacheWrite = first("cache_creation_input_tokens", "cacheCreationInputTokens");
-    let input = first("inputTokens", "input_tokens", "prompt_tokens", "promptTokens");
+    // So does OpenCode (and Kilo, its fork): a step's `tokens` is `{ input, output,
+    // reasoning, cache: { read, write } }`, with `input` the non-cached part and
+    // `output` without the reasoning (`output - reasoning` in its getUsage). The
+    // bare `input` / `output` names are read only beside that nested `cache`
+    // object, which is what marks the shape.
+    const opencode = isRecord(raw.cache);
+    const cache = isRecord(raw.cache) ? raw.cache : {};
+    const cacheRead = first("cache_read_input_tokens", "cacheReadInputTokens", "cache_read_tokens") ?? amount(cache.read);
+    const cacheWrite = first("cache_creation_input_tokens", "cacheCreationInputTokens") ?? amount(cache.write);
+    let input = first("inputTokens", "input_tokens", "prompt_tokens", "promptTokens") ?? (opencode ? amount(raw.input) : undefined);
     if (cacheRead !== undefined || cacheWrite !== undefined) input = (input ?? 0) + (cacheRead ?? 0) + (cacheWrite ?? 0);
     set(usage, "inputTokens", input);
-    set(usage, "outputTokens", first("outputTokens", "output_tokens", "completion_tokens", "completionTokens"));
+    let output = first("outputTokens", "output_tokens", "completion_tokens", "completionTokens");
+    // OpenCode counts the reasoning apart from `output`: add it back, as Codex's
+    // `output_tokens` already has it (and OpenCode itself bills it at the output rate).
+    if (output === undefined && opencode) {
+      const written = amount(raw.output);
+      const reasoning = amount(raw.reasoning);
+      if (written !== undefined || reasoning !== undefined) output = (written ?? 0) + (reasoning ?? 0);
+    }
+    set(usage, "outputTokens", output);
     // ...OpenAI, Codex and ODW's own shape already count it inside the input.
     set(
       usage,

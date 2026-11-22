@@ -160,6 +160,69 @@ test("JSONL usage adds up over every usage event, which may differ from the text
   });
 });
 
+// `opencode run --format json`, as OpenCode v2.3.2 writes it: a step_finish ends every model step.
+const stepFinish = (cost: number, tokens: { input: number; output: number; reasoning: number; cache: { read: number; write: number } }) =>
+  JSON.stringify({ type: "step_finish", timestamp: 1795261054323, sessionID: "ses_x", part: { type: "step-finish", reason: "tool-calls", cost, tokens } });
+const textEvent = (text: string) => JSON.stringify({ type: "text", sessionID: "ses_x", part: { type: "text", text } });
+const stepStart = JSON.stringify({ type: "step_start", sessionID: "ses_x", part: { type: "step-start" } });
+
+test("opencode and kilo: every step_finish adds up; the reply is still the last text event", () => {
+  const { adapters } = defaultConfig();
+  const stdout = [
+    stepStart,
+    textEvent("looking"),
+    stepFinish(0.0974002, { input: 2, output: 215, reasoning: 16, cache: { read: 5687, write: 37807 } }),
+    stepStart,
+    textEvent("done: 3 files changed"),
+    stepFinish(0.0125, { input: 3, output: 40, reasoning: 0, cache: { read: 43496, write: 120 } }),
+  ].join("\n");
+  const expected = {
+    text: "done: 3 files changed",
+    // input = input + cache read + cache write; output = output + reasoning (OpenCode counts them apart).
+    usage: { inputTokens: 2 + 5687 + 37807 + 3 + 43496 + 120, outputTokens: 215 + 16 + 40, cacheReadTokens: 5687 + 43496, cacheWriteTokens: 37807 + 120, costUsd: 0.1099002 },
+  };
+  for (const name of ["opencode", "kilo"]) assert.deepEqual(decodeOutput(adapters[name]!, stdout), expected, name);
+  // Fed in odd chunks, as a pipe would, the streaming decoder says the same.
+  const decoder = new AdapterOutputDecoder(adapters.opencode!);
+  for (let i = 0; i < stdout.length; i += 37) decoder.write(stdout.slice(i, i + 37));
+  assert.deepEqual(decoder.finish(), expected);
+});
+
+test("opencode: an agent killed before any step_finish reports no usage, and does not crash", () => {
+  const { adapters } = defaultConfig();
+  // It spoke, then died mid-step.
+  const killed = [stepStart, textEvent("half a thought")].join("\n");
+  assert.deepEqual(decodeOutput(adapters.opencode!, killed), { text: "half a thought" });
+  // It died before saying anything: only a step_start, then a cut-off line.
+  const decoded = decodeOutput(adapters.opencode!, `${stepStart}\n{"type":"step_fin`);
+  assert.equal(decoded.usage, undefined);
+});
+
+test("opencode token counts are normalized: the cache is apart from input, the reasoning from output", () => {
+  assert.deepEqual(normalizeUsage({ input: 2, output: 215, reasoning: 16, cache: { read: 5687, write: 37807 } }, 0.0974002), {
+    inputTokens: 43496,
+    outputTokens: 231,
+    cacheReadTokens: 5687,
+    cacheWriteTokens: 37807,
+    costUsd: 0.0974002,
+  });
+  // OpenCode's `total` is not read; a step with no cache still reads.
+  assert.deepEqual(normalizeUsage({ total: 9, input: 5, output: 4, reasoning: 0, cache: { read: 0, write: 0 } }), {
+    inputTokens: 5,
+    outputTokens: 4,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+  });
+  // Bare input/output names mean nothing without the nested cache object: not guessed at.
+  assert.equal(normalizeUsage({ input: 5, output: 4, reasoning: 1 }), undefined);
+  // Another CLI's names win where both are present (and add no reasoning).
+  assert.deepEqual(normalizeUsage({ input_tokens: 10, output_tokens: 3, output: 99, reasoning: 99, cache: { read: 2 } }), {
+    inputTokens: 12,
+    outputTokens: 3,
+    cacheReadTokens: 2,
+  });
+});
+
 test("a JSONL text event's errorPath reports the run's own failure; the latest text event decides", () => {
   const adapter: Adapter = {
     name: "flagged",

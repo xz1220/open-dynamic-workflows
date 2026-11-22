@@ -286,6 +286,9 @@ independent security reviews whose findings are all fixed.
 - Real usage and cost: the built-in `claude` adapter reads Claude Code's `stream-json`;
   tokens and dollars per agent and per run in `odw status`, the live view and the
   dashboard; `--budget` meters real output tokens; wide fan-outs warn up front.
+- The built-in `opencode` and `kilo` adapters now read each step's real cost and tokens
+  from the `step_finish` events of `run --format json` (cache and reasoning counted as
+  `normalizeUsage` documents), instead of the chars/4 estimate with no cost.
 - Know the cost before you run (**ODW extension**): `odw estimate <wf> [--args JSON]
   [--json]` gives the p50/p90 wall time, cost, tokens and agents of a run — and of each
   phase and adapter — from the last 20 finished runs of the same source (else of the
