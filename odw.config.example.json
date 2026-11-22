@@ -214,7 +214,7 @@
       "command": ["kilo", "run", "--format", "json", "{permission_args}", "--dir", "{workspace}"],
       "stdin": "{prompt}",
       "flags": { "model": ["--model"] },
-      "output": { "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" },
+      "output": { "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last", "usageEvent": "step_finish", "usagePath": ["part", "tokens"], "costPath": ["part", "cost"] },
       "permissionArgs": { "edit": ["--auto"] },
       "untrustedNote": "kilo has no documented way to ignore the repository's AGENTS.md, kilo.json and .kilo/ agents, commands and plugins — they still reach the agent"
     },
@@ -223,7 +223,7 @@
       "command": ["opencode", "run", "--format", "json", "{permission_args}", "--dir", "{workspace}"],
       "stdin": "{prompt}",
       "flags": { "model": ["--model"] },
-      "output": { "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last" },
+      "output": { "format": "jsonl", "eventType": "text", "textPath": ["part", "text"], "select": "last", "usageEvent": "step_finish", "usagePath": ["part", "tokens"], "costPath": ["part", "cost"] },
       "permissionArgs": { "edit": ["--auto"] },
       "untrustedNote": "opencode has no documented way to ignore the repository's AGENTS.md, opencode.json and .opencode/ agents, commands and plugins — they still reach the agent"
     },

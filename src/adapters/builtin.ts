@@ -62,11 +62,21 @@ export interface RawAdapter {
 // Model ids do not cross CLIs (e.g. `claude-opus-4-8` is invalid to codex), so a
 // model is honoured per-CLI, not normalised across them.
 
+// `opencode run --format json` (and Kilo's fork of it) prints one JSON event per
+// line. The reply is in the last `text` event; every model step ends with a
+// `step_finish` event whose part carries that step's own cost in US dollars and
+// tokens: `{"type":"step_finish","part":{"type":"step-finish","cost":0.0974,
+// "tokens":{"input":2,"output":215,"reasoning":16,"cache":{"read":5687,"write":37807}}}}`
+// (Kilo-Org/kilocode packages/opencode/src/cli/cmd/run.ts emits it, and
+// packages/schema/src/v1/session.ts defines its `cost` and `tokens`). The steps add up.
 const KILO_OPENCODE_OUTPUT: AdapterOutput = {
   format: "jsonl",
   eventType: "text",
   textPath: ["part", "text"],
   select: "last",
+  usageEvent: "step_finish",
+  usagePath: ["part", "tokens"],
+  costPath: ["part", "cost"],
 };
 // Claude Code's stream-json (https://code.claude.com/docs/en/headless): one
 // event per message, ending in a `result` event with the reply, the session's
